@@ -1,0 +1,208 @@
+---
+title: "CLfun"
+author: "Sean Watson"
+date: "February 20, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r}
+library(tidyverse)
+library(GGally)
+library(caTools)
+library(ROCR)
+```
+
+
+
+
+
+```{r}
+## chancesCL = read.csv("~/Desktop/Data/Soccer/Stratagem/Champions League/chances_from_2017-07-01.csv")
+##chancesMLS = read.csv("~/Desktop/Data/Soccer/Stratagem/MLS/chances_from_2017-02-01.csv")
+##chancesITA = read.csv("~/Desktop/Data/Soccer/Stratagem/Serie A/chances_from_2017-07-01.csv")
+##chancesFR = read.csv("~/Desktop/Data/Soccer/Stratagem/Ligue 1/chances_from_2017-07-01.csv")
+##chancesPL = read.csv("~/Desktop/Data/Soccer/Stratagem/Premier League//chances_from_2017-07-01.csv")
+##chancesBL = read.csv("~/Desktop/Data/Soccer/Stratagem/Bundesliga/chances_from_2017-07-01.csv")
+##chancesSPN= read.csv("~/Desktop/Data/Soccer/Stratagem/La Liga/chances_from_2017-07-01.csv")
+```
+
+```{r}
+##chancesALL = rbind(chancesCL,chancesMLS,chancesITA,chancesFR,chancesPL,chancesBL,chancesSPN)
+```
+
+```{r}
+str(chancesALL)
+```
+
+```{r}
+chancesALL$defPressure = as.integer(chancesALL$defPressure)
+chancesALL$numDefPlayers = as.integer(chancesALL$numDefPlayers)
+chancesALL$numAttPlayers = as.integer(chancesALL$numAttPlayers)
+chancesALL$shotQuality = as.integer(chancesALL$shotQuality)
+```
+
+
+```{r}
+##Turning outcome into a factor with only two levels: Goal/No Goal
+levels(chancesALL$outcome)
+##want to select out rows with an outcome of "Penalty Awarded". Don't want penalties to affect our xG model
+chancesALL = chancesALL %>% filter(chancesALL$outcome != "Penalty Awarded")
+chancesALL = chancesALL %>% filter(chancesALL$primaryPlayer != "-")
+## the level of "-" is a goal, so that will be one of our factor levels. All other outcomes become our other level.
+```
+
+```{r}
+## the level of "-" is a goal, so that will be one of our factor levels. All other outcomes become our other level
+levels(chancesALL$outcome) = list(NoGoal = c("Defended","Saved","Missed","Woodwork","Save"), Goal = c("-"))
+str(chancesALL)
+```
+
+
+```{r}
+##Must finish cleaning data, some N/A's in primaryType and outcome
+chancesALL = chancesALL %>% filter(chancesALL$primaryType != "-")
+chancesALL = chancesALL[complete.cases(chancesALL$outcome),]
+summary(chancesALL)
+```
+
+##Splitting Data for modelling
+
+```{r}
+set.seed(666)
+split = sample.split(chancesALL$outcome, SplitRatio = 0.7)
+train = subset(chancesALL, split == TRUE)
+test = subset(chancesALL, split == FALSE)
+```
+
+##Checking Correlations
+```{r}
+##only selecting variables that realistically affect the game, had to leave out a couple due to factor levels too high for the function
+ggpairs(train, columns = c(21,8,9,16:20))
+```
+
+Number of Attacking and Defending players look correlated, definitely want to try those. Shot Quality looks possible, and seems intuitively like it'd make the most sense. DefPressure may make some difference but I'll have to try it to find out.  
+
+I didn't throw the location variables in because I'm not sure how to work on those yet, but they are coming later.  
+
+##Modelling on Training Set
+
+```{r}
+str(train)
+```
+
+```{r}
+##starting with ShotQuality, seemed the most intuitive to me
+model1 = glm(outcome ~ shotQuality,family = "binomial", data = train)
+summary(model1)
+```
+
+Decent so far, good variable.  Makes sense intuitively, as shotQuality improves, likelihood of scoring improves
+
+```{r}
+##throwing in defensive players, seems intuitive and also looked correlated
+model2 = glm(outcome ~ shotQuality + numDefPlayers,family = "binomial", data = train)
+summary(model2)
+```
+
+Another good variable, model looking good so far. Variable makes sense too, as the number of defensive players increases, your likelihood of scoring decreases.
+
+```{r}
+##adding attacking players, same reasons as defensive players
+model3 = glm(outcome ~ shotQuality + numDefPlayers + numAttPlayers,family = "binomial", data = train)
+summary(model3)
+```
+
+Model still looks great. AIC has come way down from the first model, and each variable so far looks significant and logical.  
+
+```{r}
+##trying defPressure. Didn't look amazingly correlated, but seems intuitively to make sense
+model4 = glm(outcome ~ shotQuality + numDefPlayers + numAttPlayers + defPressure,family = "binomial", data = train)
+summary(model4)
+```
+
+Variable is significant and makes sense. AIC didn't go down a whole lot, but I'm still going to stick with it.  
+
+```{r}
+##adding bodyPart, hard to tell if it's correlated but at this point I'm just going trial and error with the remaining variables to see if they tell me anything
+model5 = glm(outcome ~ shotQuality + numDefPlayers + numAttPlayers + defPressure + bodyPart,family = "binomial", data = train)
+summary(model5)
+```
+
+Body Part looks solid. Variables are significant, but I'm not certain intuitively that Body Part should matter. Different players may be right or left footed and have varying levels of strength with their head. Those are extra variables that aren't depicted in the data that could create some noise in this variable. I'm going to stay wary of it, but I'm keeping it in for now.  
+
+```{r}
+##going to try chanceRating now. Last variable that I calculated correlation for that I can use. Icon variable includes a "goal" input which makes the variable bad for predicting chances. It's already a classification of the outcome which we don't want.
+model6 = glm(outcome ~ shotQuality + numDefPlayers + numAttPlayers + defPressure + bodyPart + chanceRating, family = "binomial", data = train)
+summary(model6)
+```
+Oops. Looks like I didn't realize I couldn't use this variable for the same reason I can't use Icon. It is an outcome classification and really messes up my model. Going to throw that back out, try the chancetype variables, and then decide if I want to keep BodyPart.
+
+```{r}
+##primarytype
+model7 = glm(outcome ~ shotQuality + numDefPlayers + numAttPlayers + defPressure + bodyPart + primaryType, family = "binomial", data = train)
+summary(model7)
+```
+
+Not sure if I like this. Some of the factors aren't significant, and it messes up a couple of the bodyPart variables. Going to try taking BodyPart out. It is nice though that some of the PrimaryType factors are significant, and the AIC is down, but not sure if it's worth the damage.
+
+
+```{r}
+model8 = glm(outcome ~ shotQuality + numDefPlayers + numAttPlayers + defPressure + primaryType, family = "binomial", data = train)
+summary(model8)
+```
+
+Not a big fan of this either. I wanted to remove bodyPart to see if it helped out PrimaryType as a variable due to multi-colinnearities, but it didn't really, so I'm inclined to keep BodyPart in the model and just roll with model5 for now. I think it's probably the best I'm going to do until I work in location/angle to the model. So I'll look at some accuracies and the optimal sensitivity.
+
+```{r}
+predtrain = predict(model5,type = "response")
+```
+
+```{r}
+##ROC Curve
+ROCRpred = prediction(predtrain, train$outcome)
+ROCRperf = performance(ROCRpred, "tpr", "fpr")
+plot(ROCRperf, colorize=TRUE, print.cutoffs.at=seq(0,1,by=0.1), text.adj=c(-0.2,1.7))
+as.numeric(performance(ROCRpred, "auc")@y.values)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
